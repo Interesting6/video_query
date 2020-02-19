@@ -4,6 +4,7 @@
 import numpy as np
 import cv2
 import os, shutil
+import re
 
 
 
@@ -40,7 +41,7 @@ def extract(obj_occ_sec, vid_pth, vid_res_dir, query_obj):
         
         obj_occ_sec: array-like, sorted query object occuring time in video 
         vid_pth: original video path
-        vid_res_dir: str, the results video fragmen restore path
+        vid_res_dir: str, the results video fragment restore path
         query_obj: str, the name of query object
     """
     interval = calc_interval(obj_occ_sec)
@@ -79,25 +80,37 @@ def extract(obj_occ_sec, vid_pth, vid_res_dir, query_obj):
 
 
 
+def load_obj_time(pth):
+    with open(pth, 'r') as f:
+        text = f.read()
+    obj_occ_sec = re.findall(r'(?<=f)\d+(?=.)', text)
+    obj_occ_sec = np.array(obj_occ_sec, dtype=int)
+    obj_occ_sec = np.sort(np.unique(obj_occ_sec))
+    return obj_occ_sec
 
 
 
 if __name__ == "__main__":
-    obj_occ_sec = [1,2,3,4,5,6,7,8, 15,17,19,20,21, 30,31,32,34,35, 40,41, 50,51, 60, 70,71,72, 80,81,82,83]
-    obj_occ_sec = np.array(obj_occ_sec)
-    interval = calc_interval(obj_occ_sec)
-    print(interval)
-    # 不前后扩充2秒的结果为：
-    # [[ 1  9]
-    # [15 22]
-    # [30 42]
-    # [70 73]
-    # [80 84]]
+    pth = './utils/people.txt'
+    obj_occ_sec = load_obj_time(pth)
+    print(obj_occ_sec)
 
 
-    vid_pth = '~/Datasets/videos/2.avi'
-    vid_res_dir = './Test/extract/'
-    query_obj = 'man'
-    extract(obj_occ_sec, vid_pth, vid_res_dir, query_obj)
+    # obj_occ_sec = [1,2,3,4,5,6,7,8, 15,17,19,20,21, 30,31,32,34,35, 40,41, 50,51, 60, 70,71,72, 80,81,82,83]
+    # obj_occ_sec = np.array(obj_occ_sec)
+    # interval = calc_interval(obj_occ_sec)
+    # print(interval)
+    # # 不前后扩充2秒的结果为：
+    # # [[ 1  9]
+    # # [15 22]
+    # # [30 42]
+    # # [70 73]
+    # # [80 84]]
+
+
+    # vid_pth = '~/Datasets/videos/2.avi'
+    # vid_res_dir = './Test/extract/'
+    # query_obj = 'man'
+    # extract(obj_occ_sec, vid_pth, vid_res_dir, query_obj)
 
 
