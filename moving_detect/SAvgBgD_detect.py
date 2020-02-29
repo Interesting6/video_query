@@ -1,80 +1,88 @@
+import cv2 
 import numpy as np
-import cv2
-from matplotlib import pyplot as plt
-import os, time
+# from matplotlib import pyplot as plt
+import os, shutil, time
+from functools import wraps
 
 
-stime = time.time()
-vid_path = "/home/cym/Datasets/videos/2.avi"
-vid_name = vid_path.split('/')[-1].split('.')[0]
-bg_store_pth = "./BgDiff/bgs/"
-bg_store_pth = bg_store_pth + 'file_' + vid_name + "/"
-diff_store_pth = "./BgDiff/avg_absdiffs/"
-diff_store_pth = diff_store_pth + 'file_' + vid_name + "/"
-det_store_pth = "./BgDiff/detect_res/"
-det_store_pth = det_store_pth + 'file_' + vid_name + "/"
-if not os.path.exists(det_store_pth):
-    os.makedirs(det_store_pth)
-
-cap = cv2.VideoCapture(vid_path)
-fps = int(cap.get(cv2.CAP_PROP_FPS))
-cap_length = int(cap.get(7)) # CV_CAP_PROP_FRAME_COUNT
-W, H = cap.get(3), cap.get(4)
-print("video FPS: ", fps)
-scene_f = 10*60 # 一个场景为10分钟，每10分钟生成一个背景
+def log(file_path):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            stime = time.time()
+            res = func(*args, **kwargs)
+            etime = time.time()
+            using_time = etime - stime
+            print('using time: ', using_time)
+            with open(file_path, 'a+') as f:
+                f.write('Run func: {} using time {}s, with the parameters:\n\
+                    {}, {}. \n\n'.format(func.__name__, using_time, args, kwargs))
+        return wrapper
+    return decorator
 
 
-bg_store_pth = bg_store_pth + "bg_{}m.png"
-diff_store_pth = diff_store_pth + "diff_{}m.png"
+res_stats_pth = './Results/results_stats.txt'
+@log(res_stats_pth)
+def move_avg_bg(video_pth, alpha=0.1, n_dil=4, n_ero=1, thre=25, area=4096):
+    video_name = video_pth.split('/')[-1].replace('.', '_')
+    res_name = str(alpha).replace('.', '') + f'_{n_dil}'
+    res_path = f"./Results/{video_name}/{res_name}"
+    if os.path.exists(res_path):
+        shutil.rmtree(res_path)
+    os.makedirs(res_path)
 
-scene_num = 1
-avg_gframe = cv2.imread(bg_store_pth.format(scene_num), 0)
-avg_absdiff = cv2.imread(diff_store_pth.format(scene_num), 0)
+    cap = cv2.VideoCapture(video_pth)
+    fps = int(cap.get(5))
+    size = int(cap.get(3)), int(cap.get(4))
+    sqker = np.ones((5,5),np.uint8)
 
-sqker = np.ones((5,5), np.uint8)
-elker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 13))
+    avg = None
 
-thresh = 25
-frame_num = 0
-i = -1
-while cap.isOpened():
-    i += 1
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    if i % fps == 0: # 每秒测一张
-        sec = i // fps
-        if frame_num <= scene_f:
-            frame_num += 1
-            gframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            frame_delta = cv2.absdiff(gframe, avg_gframe)
-            frame_delta = cv2.absdiff(frame_delta, avg_absdiff)
-            bframe = cv2.threshold(frame_delta, thresh, 255, cv2.THRESH_BINARY)[1]
-            bframe = cv2.erode(bframe, sqker, iterations=1)
-            bframe = cv2.dilate(bframe, elker, iterations=2)
+    i = -1
+    while cap.isOpened():
+        i += 1
+        ret, frame = cap.read()
+        if not ret:
+            print("Video end!")
+            break
+        if i % fps == 0:
+            sec = i // fps
+            gframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)#变成灰色图像
+            gframe = cv2.GaussianBlur(gframe,(5,5),0)#高斯滤波
+            if avg is None:
+                avg = gframe.astype('float')
+            cv2.accumulateWeighted(gframe, avg, alpha)
+            frame_delta = cv2.absdiff(gframe, cv2.convertScaleAbs(avg))
+            bframe = cv2.threshold(frame_delta, thre, 255, cv2.THRESH_BINARY)[1]
+            bframe = cv2.erode(bframe, sqker, iterations=n_ero)
+            bframe = cv2.dilate(bframe, sqker, iterations=n_dil)
             contours = cv2.findContours(bframe, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[1]
+
+            det_num = 0
             for idx, c in enumerate(contours, 1):
-                area = cv2.contourArea(c)
-                if  area > 1000:
+                if cv2.contourArea(c) > area: 
                     (x,y,w,h) = cv2.boundingRect(c)
-                    if x<500 and y<80:
+                    if x<800 and y<90:
                         continue
-                    xl, yu = x - 10, y - 20
-                    if x < 10:
+                    det_num += 1
+                    xl, yu = x - 12, y - 20
+                    if x < 12:
                         xl = x - x // 2
                     if y < 20:
                         yu = y - y // 2
-                    crop_img = frame[yu: y + h + 10, xl: x + w + 20] 
-                    cv2.imwrite("{}{}s_{}f.jpg".format(det_store_pth, sec, idx), crop_img)
-                    print("detected!")
-           
-        else:
-            frame_num = 0
-            scene_num += 1
-            avg_gframe = cv2.imread(bg_store_pth.format(scene_num), 0)
-            avg_absdiff = cv2.imread(diff_store_pth.format(scene_num), 0)
+                    crop_img = frame[yu: y + h + 20, xl: x + w + 12] 
+                    cv2.imwrite(f'{res_path}/{sec}s_{det_num}o.jpg', crop_img)
+            if det_num:
+                print(f"{sec}s detected {det_num} obj!")
+
+    cap.release()
 
 
-cap.release()
-print("detect time in video {}.avi using: {}".format(vid_name, time.time()-stime))
+
+if __name__ == "__main__":
+    video_pth = "/home/cym/Datasets/videos/2.avi"
+    alpha = 0.02
+    n_dil = 4
+    move_avg_bg(video_pth, alpha=alpha, n_dil=n_dil)
+
+
