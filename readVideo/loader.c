@@ -23,13 +23,13 @@ static PyObject *CoviarError; // 静态全局变量
 
 void create_and_load_bgr(AVFrame *pFrame, AVFrame *pFrameBGR, uint8_t *buffer,
     PyArrayObject ** arr, int cur_pos, int pos_target) {
-    /* pFrame为解码后的原始数据，pFrameBGR为一块空内存，buffer指针直接被赋值？！！
+    /* pFrame为解码后的原始数据，pFrameBGR为一块空内存，buffer指针指向一块内存空间
     arr为解码的数据，cur_pos为gop里的当前位置，pos_target为gop里的目标位置
     流程：pFrame -转换-> pFrameBGR -复制内存到-> arr
     */
 
     int numBytes = avpicture_get_size(AV_PIX_FMT_BGR24, pFrame->width, pFrame->height); // 算出某格式和分辨率下一帧图像的数据大小：3*w*h 
-    buffer = (uint8_t*) av_malloc(numBytes * sizeof(uint8_t)); // 分配保存图像的内存。buffer为输入参数，却直接赋值？
+    buffer = (uint8_t*) av_malloc(numBytes * sizeof(uint8_t)); // 分配保存图像的内存。buffer指向该内存空间。
     avpicture_fill((AVPicture*) pFrameBGR, buffer, AV_PIX_FMT_BGR24, pFrame->width, pFrame->height);  // 会将pFrameRGB的数据按RGB24格式自动"关联"到buffer
     // pFrameRGB和buffer都是已经申请到的一段内存, 下面sws_scale调用时，pFrameRGB为转换完的数据，也自动到了buffer里面。
 
@@ -58,12 +58,13 @@ void create_and_load_bgr(AVFrame *pFrame, AVFrame *pFrameBGR, uint8_t *buffer,
     uint8_t *src  = (uint8_t*) pFrameBGR->data[0]; 
     uint8_t *dest = (uint8_t*) (*arr)->data;
 
-    int array_idx; // 这个idx有什么用呢？是目标位置，则bgr_arr挪一个图像单位？不是则不用挪。
-    if (cur_pos == pos_target) { // 如果gop里的当前位置等于gop里的目标位置
-        array_idx = 1;  // 这里就是下面bgr_arr的第一维为什么设为2的原因了。
+    int array_idx; // 这里就是下面bgr_arr的第一维为什么设为2的原因了。
+    if (cur_pos == pos_target) { // 如果在gop里的   当前位置等于的目标位置
+        array_idx = 1;  // arr的后一半，只有当当前位置等于目标位置时，才是当前帧的BGR图像，放在arr的后一半
     } else {
-        array_idx = 0;
+        array_idx = 0;  // arr的前一半，不是要取的那帧，所以放在arr的前一半。
     }
+    // 在后面就是用arr后一半的frame 减 前一半的frame，从而得到residual。
     memcpy(dest + array_idx * stride_0, src, height * linesize * sizeof(uint8_t));
     av_free(buffer);  // 好像buffer也没有用到呀。。。
 }
@@ -91,7 +92,7 @@ void create_and_load_mv_residual(
         const AVMotionVector *mv = &mvs[i]; 
         assert(mv->source == -1); // 断言为：由过去的参考帧得到的mv
 
-        // mv的坐标有变换：
+        // mv的坐标有变化：
         if (mv->dst_x - mv->src_x != 0 || mv->dst_y - mv->src_y != 0) { 
 
             val_x = mv->dst_x - mv->src_x;  // x的移动量
@@ -99,7 +100,7 @@ void create_and_load_mv_residual(
 
             // 遍历宏块，从-w/2到w/2；-h/2到h/2
             for (int x_start = (-1 * mv->w / 2); x_start < mv->w / 2; ++x_start) {
-                for (int y_start = (-1 * mv->h / 2); y_start < mv->h / 2; ++y_start) { // 中心原点在中间？
+                for (int y_start = (-1 * mv->h / 2); y_start < mv->h / 2; ++y_start) { // 零点在图像中心？
                     p_dst_x = mv->dst_x + x_start;  // 绝对位置 变为 相对位置？
                     p_dst_y = mv->dst_y + y_start;
 
@@ -164,8 +165,8 @@ void create_and_load_mv_residual(
                         src_x = accu_src[tmp];
                         src_y = accu_src[tmp + 1];
                     } else {
-                        src_x = x - (*((int32_t*)PyArray_GETPTR3(mv_arr, y, x, 0)));
-                        src_y = y - (*((int32_t*)PyArray_GETPTR3(mv_arr, y, x, 1)));
+                        src_x = x - (*( (int32_t*)PyArray_GETPTR3(mv_arr, y, x, 0) ));
+                        src_y = y - (*( (int32_t*)PyArray_GETPTR3(mv_arr, y, x, 1) ));
                     }
                     location_src = src_y * stride_1 + src_x * stride_2; // 上一帧的(src_x, src_y)像素点在residual中的一维索引
 
@@ -201,9 +202,9 @@ int decode_video(
     AVFrame *pFrame;
     AVFrame *pFrameBGR;
     
-    const int in_buffer_size=4096;  
-    uint8_t in_buffer[in_buffer_size + FF_INPUT_BUFFER_PADDING_SIZE];  // FF_INPUT_BUFFER_PADDING_SIZE=32
-    memset(in_buffer + in_buffer_size, 0, FF_INPUT_BUFFER_PADDING_SIZE);  // 从上面第一个到第二个填充的部分设为0？
+    const int in_buffer_size=4096;     // FF_INPUT_BUFFER_PADDING_SIZE=32
+    uint8_t in_buffer[in_buffer_size + FF_INPUT_BUFFER_PADDING_SIZE];  // 定长数组in_buffer[4096+32]，
+    memset(in_buffer + in_buffer_size, 0, FF_INPUT_BUFFER_PADDING_SIZE);  // in_buffer[4096:4096+32] = 0
 
     uint8_t *cur_ptr;  
     int cur_size;
@@ -248,7 +249,7 @@ int decode_video(
     int cur_pos = 0;
 
     pFrame = av_frame_alloc();  // 分配内存，存放从AVPacket中解码出来的原始数据
-    pFrameBGR = av_frame_alloc(); // 这个不放到create_and_load_bgr里面去创建，最后返回这个的原因应该是，之后得free掉吧
+    pFrameBGR = av_frame_alloc(); // 这个不放到create_and_load_bgr里面去创建，原因应该是最后返回这个，之后得free掉，否者在函数里面free掉就没法返回了
 
     uint8_t *buffer;
 
@@ -263,20 +264,20 @@ int decode_video(
         // 每次读in_buffer_size=4096 bite，要读取的每个元素大小为1。
         if (cur_size == 0)  
             break;  
-        cur_ptr=in_buffer;  
+        cur_ptr=in_buffer;  // 这个设不设都没关系吧？为了保护in_buffer不被变化？
   
-        while (cur_size>0){  
+        while (cur_size>0){   // 缓存中还剩余数据，否者缓存中的数据全部解析后依然未能找到一个完整的包，那么继续从输入文件中读取数据到缓存
             // 将一个个AVPaket数据解析组成完整的一帧未解码的压缩数据
             int len = av_parser_parse2(  // 拿到AVPaket数据，从输入的数据流中分离出一帧一帧的压缩编码数据，输入为H.264、HEVC码流文件
                 pCodecParserCtx, pCodecCtx,  
-                &packet.data, &packet.size,  
+                &packet.data, &packet.size,  // packet.size维0，不断读取数据流，直到读取到一个完整帧，才置为1
                 cur_ptr , cur_size ,  // 一次接收的数据包 和 本次接收数据包的长度
                 AV_NOPTS_VALUE, AV_NOPTS_VALUE, AV_NOPTS_VALUE);  
 
             cur_ptr += len;  
             cur_size -= len;
 
-            if(packet.size==0)  // 包里没有数据？
+            if(packet.size==0)  // 还未解析到一个完整帧，继续继续解析缓存中剩余的码流。
                 continue;  
 
             if (pCodecParserCtx->pict_type == AV_PICTURE_TYPE_I) {  // 读到I帧的时候
@@ -546,8 +547,8 @@ static PyObject *load(PyObject *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "siiii", &filename,
         &gop_target, &pos_target, &representation, &accumulate)) return NULL;
 
-    PyArrayObject *bgr_arr = NULL;   // BGR的arr
-    PyArrayObject *final_bgr_arr = NULL;  // 要返回的arr
+    PyArrayObject *bgr_arr = NULL;   // BGR的arr的指针
+    PyArrayObject *final_bgr_arr = NULL;  // 要返回的arr的指针
     PyArrayObject *mv_arr = NULL;  // motion vector arr的指针
     PyArrayObject *res_arr = NULL; // residual arr的指针
 
@@ -557,7 +558,7 @@ static PyObject *load(PyObject *self, PyObject *args)
                     accumulate) < 0) {
         printf("Decoding video failed.\n");
 
-        Py_XDECREF(bgr_arr); // 
+        Py_XDECREF(bgr_arr); // 释放内存
         Py_XDECREF(mv_arr);
         Py_XDECREF(res_arr);
         return Py_None;
